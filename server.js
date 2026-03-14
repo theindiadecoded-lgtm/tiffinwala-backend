@@ -46,7 +46,7 @@ const io = new Server(server, {
 // ════════════════════════════════════════════
 
 // Security headers
-app.use(helmet());
+app.set('trust proxy', 1);
 
 // CORS — allow all origins in dev, restrict in production
 app.use(cors({
