@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────
+#  .gitignore
+#  Files that should NEVER be pushed to GitHub
+# ─────────────────────────────────────────────
+
+# Environment variables (contains passwords and API keys!)
+.env
+
+# Node modules (reinstalled via npm install)
+node_modules/
+
+# Prisma generated client
+node_modules/.prisma/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/

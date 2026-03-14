@@ -1,0 +1,293 @@
+// ─────────────────────────────────────────────
+//  prisma/schema.prisma
+//  Database schema for TiffinWala.
+//  Run: npx prisma migrate dev  → creates all tables
+//  Run: npx prisma studio       → visual DB browser
+// ─────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── User roles ──────────────────────────────
+enum Role {
+  CUSTOMER
+  COOK
+  RIDER
+  ADMIN
+}
+
+// ── Order statuses (lifecycle) ──────────────
+enum OrderStatus {
+  PENDING       // just placed, waiting for cook
+  CONFIRMED     // cook accepted
+  PREPARING     // cook is cooking
+  READY         // food ready, waiting for rider pickup
+  PICKED_UP     // rider picked up the food
+  DELIVERED     // customer received food
+  CANCELLED     // cancelled by cook or customer
+}
+
+// ── Payment methods ──────────────────────────
+enum PaymentMethod {
+  UPI
+  CASH
+}
+
+// ── Payment status ───────────────────────────
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+// ── Food type ────────────────────────────────
+enum FoodType {
+  VEG
+  NON_VEG
+}
+
+// ── Subscription plan types ──────────────────
+enum PlanType {
+  FIVE_DAY    // Mon-Fri
+  MONTHLY     // 30 days
+}
+
+// ════════════════════════════════════════════
+//  TABLE: users
+//  Stores all users — customers, cooks, riders, admins.
+//  Role field differentiates who they are.
+// ════════════════════════════════════════════
+model User {
+  id          String   @id @default(uuid())
+  phone       String   @unique           // Indian mobile number with +91
+  name        String?
+  role        Role     @default(CUSTOMER)
+  photoUrl    String?                    // Firebase Storage URL
+  fcmToken    String?                    // Firebase push notification token
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  addresses       Address[]
+  ordersAsCustomer Order[]   @relation("CustomerOrders")
+  ordersAsCook     Order[]   @relation("CookOrders")
+  ordersAsRider    Order[]   @relation("RiderOrders")
+  menuItems        MenuItem[]
+  riderLocation    RiderLocation?
+  payments         Payment[]
+  subscriptions    Subscription[]
+  reviewsGiven     Review[]  @relation("ReviewsByCustomer")
+  earnings         Earning[]
+
+  @@index([phone])
+  @@index([role])
+}
+
+// ════════════════════════════════════════════
+//  TABLE: addresses
+//  Customer's saved delivery addresses.
+// ════════════════════════════════════════════
+model Address {
+  id        String  @id @default(uuid())
+  userId    String
+  label     String  @default("Home")    // "Home", "Office", "Other"
+  line1     String                       // House/flat number, street
+  area      String                       // Locality (e.g. "Naka Bypass")
+  city      String  @default("Motihari")
+  pincode   String
+  lat       Float?                       // GPS coordinates for map
+  lng       Float?
+  isDefault Boolean @default(false)
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  @@index([userId])
+}
+
+// ════════════════════════════════════════════
+//  TABLE: menu_items
+//  Individual tiffin items offered by a cook.
+//  Cook can toggle availability daily.
+// ════════════════════════════════════════════
+model MenuItem {
+  id          String   @id @default(uuid())
+  cookId      String
+  name        String                     // e.g. "Dal Chawal Thali"
+  description String?
+  price       Int                        // in ₹ (rupees, not paise)
+  type        FoodType @default(VEG)
+  photoUrl    String?
+  maxDaily    Int      @default(20)      // max orders per day
+  isAvailable Boolean  @default(true)   // cook can toggle off
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  cook       User        @relation(fields: [cookId], references: [id])
+  orderItems OrderItem[]
+
+  @@index([cookId])
+  @@index([isAvailable])
+}
+
+// ════════════════════════════════════════════
+//  TABLE: orders
+//  Core order record linking customer → cook → rider.
+// ════════════════════════════════════════════
+model Order {
+  id            String        @id @default(uuid())
+  customerId    String
+  cookId        String
+  riderId       String?                  // assigned after cook marks READY
+  addressId     String
+  status        OrderStatus   @default(PENDING)
+  paymentMethod PaymentMethod @default(UPI)
+  subtotal      Int                      // before GST, in ₹
+  gst           Int                      // 5% of subtotal
+  total         Int                      // subtotal + gst
+  note          String?                  // special instructions
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deliveredAt   DateTime?
+
+  customer   User       @relation("CustomerOrders", fields: [customerId], references: [id])
+  cook       User       @relation("CookOrders",     fields: [cookId],     references: [id])
+  rider      User?      @relation("RiderOrders",    fields: [riderId],    references: [id])
+  address    Address    @relation(fields: [addressId], references: [id])
+  items      OrderItem[]
+  payment    Payment?
+  review     Review?
+
+  @@index([customerId])
+  @@index([cookId])
+  @@index([riderId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ════════════════════════════════════════════
+//  TABLE: order_items
+//  Individual items within an order.
+//  unitPrice snapshot = price at time of order
+//  (in case cook changes price later)
+// ════════════════════════════════════════════
+model OrderItem {
+  id          String @id @default(uuid())
+  orderId     String
+  menuItemId  String
+  quantity    Int
+  unitPrice   Int    // snapshot of price when ordered
+
+  order    Order    @relation(fields: [orderId],    references: [id], onDelete: Cascade)
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id])
+
+  @@index([orderId])
+}
+
+// ════════════════════════════════════════════
+//  TABLE: payments
+//  Razorpay transaction records.
+// ════════════════════════════════════════════
+model Payment {
+  id               String        @id @default(uuid())
+  orderId          String        @unique
+  userId           String
+  razorpayOrderId  String?       // from Razorpay API
+  razorpayPaymentId String?      // confirmed after payment
+  razorpaySignature String?      // for verification
+  amount           Int           // in ₹
+  status           PaymentStatus @default(PENDING)
+  method           PaymentMethod
+  paidAt           DateTime?
+  createdAt        DateTime      @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+  user  User  @relation(fields: [userId],  references: [id])
+
+  @@index([orderId])
+  @@index([userId])
+}
+
+// ════════════════════════════════════════════
+//  TABLE: rider_locations
+//  One row per rider — updated every ~5 seconds
+//  by the rider app via POST /riders/me/location.
+//  Used for live tracking on customer's map.
+// ════════════════════════════════════════════
+model RiderLocation {
+  riderId   String   @id
+  latitude  Float
+  longitude Float
+  isOnline  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+
+  rider User @relation(fields: [riderId], references: [id])
+}
+
+// ════════════════════════════════════════════
+//  TABLE: subscriptions
+//  Weekly / monthly tiffin plans bought by customers.
+// ════════════════════════════════════════════
+model Subscription {
+  id         String   @id @default(uuid())
+  customerId String
+  planType   PlanType
+  startDate  DateTime
+  endDate    DateTime
+  isActive   Boolean  @default(true)
+  amount     Int
+  createdAt  DateTime @default(now())
+
+  customer User @relation(fields: [customerId], references: [id])
+
+  @@index([customerId])
+  @@index([isActive])
+}
+
+// ════════════════════════════════════════════
+//  TABLE: reviews
+//  Customer rates cook and rider after delivery.
+// ════════════════════════════════════════════
+model Review {
+  id          String   @id @default(uuid())
+  orderId     String   @unique
+  customerId  String
+  cookRating  Int                // 1-5 stars
+  riderRating Int?               // optional (cash orders may not have rider)
+  comment     String?
+  createdAt   DateTime @default(now())
+
+  order    Order @relation(fields: [orderId],    references: [id])
+  customer User  @relation("ReviewsByCustomer", fields: [customerId], references: [id])
+
+  @@index([customerId])
+}
+
+// ════════════════════════════════════════════
+//  TABLE: earnings
+//  Tracks daily earnings for cooks and riders.
+//  Used for the payouts dashboard in admin panel.
+// ════════════════════════════════════════════
+model Earning {
+  id        String   @id @default(uuid())
+  userId    String
+  role      Role                          // COOK or RIDER
+  amount    Int                           // in ₹
+  orderId   String
+  isPaid    Boolean  @default(false)      // true after admin pays out
+  paidAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([isPaid])
+}
