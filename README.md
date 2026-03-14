@@ -232,3 +232,4 @@ Use Postman or Insomnia for full API testing.
 | Razorpay | 2% per transaction |
 | Total to start | ~₹0/month |
 "# tiffinwala-backend" 
+"# tiffinbackend" 
